@@ -69,7 +69,6 @@ from transformers import (
 from transformers.utils import check_min_version
 from transformers.utils.versions import require_version
 
-
 # Will error if the minimal version of Transformers is not installed. Remove at your own risks.
 check_min_version("4.57.0.dev0")
 
@@ -144,7 +143,7 @@ def parse_args():
     parser.add_argument(
         "--learning_rate",
         type=float,
-        default=2e-4,
+        default=5e-4,
         help="Initial learning rate (after the potential warmup period) to use.",
     )
     parser.add_argument("--weight_decay", type=float, default=0.1, help="Weight decay to use.")
@@ -171,7 +170,7 @@ def parse_args():
     parser.add_argument(
         "--num_warmup_steps", type=int, default=2000, help="Number of steps for the warmup in the lr scheduler."
     )
-    parser.add_argument("--output_dir", type=str, default="/data3/wenhuach", help="Where to store the final model.")
+    parser.add_argument("--output_dir", type=str, default="/data3/wenhuach/train_llm", help="Where to store the final model.")
     parser.add_argument("--seed", type=int, default=42, help="A seed for reproducible training.")
     parser.add_argument(
         "--model_type",
@@ -278,7 +277,8 @@ def main():
         accelerator_log_kwargs["log_with"] = args.report_to
         accelerator_log_kwargs["project_dir"] = args.output_dir
 
-    accelerator = Accelerator(mixed_precision="bf16",gradient_accumulation_steps=args.gradient_accumulation_steps, **accelerator_log_kwargs)
+    accelerator = Accelerator(mixed_precision="bf16", gradient_accumulation_steps=args.gradient_accumulation_steps,
+                              **accelerator_log_kwargs)
 
     # Make one log on every process with the configuration for debugging.
     logging.basicConfig(
@@ -428,8 +428,9 @@ def main():
     #     )
     # elif args.model_name_or_path:
     tokenizer = AutoTokenizer.from_pretrained("/models/Qwen3-0.6B"
-    , use_fast=not args.use_slow_tokenizer, trust_remote_code=args.trust_remote_code
-    )
+                                              , use_fast=not args.use_slow_tokenizer,
+                                              trust_remote_code=args.trust_remote_code
+                                              )
     # else:
     #     raise ValueError(
     #         "You are instantiating a new tokenizer from scratch. This is not supported by this script. "
@@ -469,6 +470,7 @@ def main():
     # column_names = raw_datasets["train"].column_names
     # text_column_name = "text" if "text" in column_names else column_names[0]
     text_column_name = "text"
+
     def tokenize_function(examples):
         return tokenizer(examples[text_column_name])
 
@@ -507,7 +509,7 @@ def main():
         total_length = (total_length // block_size) * block_size
         # Split by chunks of max_len.
         result = {
-            k: [t[i : i + block_size] for i in range(0, total_length, block_size)]
+            k: [t[i: i + block_size] for i in range(0, total_length, block_size)]
             for k, t in concatenated_examples.items()
         }
         result["labels"] = result["input_ids"].copy()
@@ -547,11 +549,11 @@ def main():
 
     # Optimizer
     # Split weights in two groups, one with weight decay and the other not.
-    no_decay = ["bias", "norm.weight"] # norm.weight change by wenhua
+    no_decay = ["bias", "norm.weight"]  # norm.weight change by wenhua
     # all_p = [n for n, p in model.named_parameters()]
     # print(all_p,flush=True)
     no_decay_p = [n for n, p in model.named_parameters() if any(nd in n for nd in no_decay)]
-    print(no_decay_p,flush=True)
+    print(no_decay_p, flush=True)
     optimizer_grouped_parameters = [
         {
             "params": [p for n, p in model.named_parameters() if not any(nd in n for nd in no_decay)],
@@ -562,7 +564,8 @@ def main():
             "weight_decay": 0.0,
         },
     ]
-    optimizer = torch.optim.AdamW(optimizer_grouped_parameters, lr=args.learning_rate,betas=(0.9, 0.95)) # betas are changed by wenhua
+    optimizer = torch.optim.AdamW(optimizer_grouped_parameters, lr=args.learning_rate,
+                                  betas=(0.9, 0.95))  # betas are changed by wenhua
 
     # Scheduler and math around the number of training steps.
     overrode_max_train_steps = False
@@ -683,7 +686,7 @@ def main():
                 progress_bar.update(1)
                 completed_steps += 1
 
-                if args.with_tracking and completed_steps%10==0:
+                if args.with_tracking and completed_steps % 10 == 0:
                     accelerator.log(
                         {
                             "train/loss": total_loss,
