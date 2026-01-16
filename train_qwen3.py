@@ -472,7 +472,7 @@ def main():
     text_column_name = "text"
 
     def tokenize_function(examples):
-        return tokenizer(examples[text_column_name])
+        return tokenizer(examples[text_column_name], truncation=True, max_length=tokenizer.model_max_length)
 
     with accelerator.main_process_first():
         tokenized_datasets = raw_datasets.map(
