@@ -170,7 +170,7 @@ def parse_args():
     parser.add_argument(
         "--num_warmup_steps", type=int, default=2000, help="Number of steps for the warmup in the lr scheduler."
     )
-    parser.add_argument("--output_dir", type=str, default="/data3/wenhuach/train_llm", help="Where to store the final model.")
+    parser.add_argument("--output_dir", type=str, default="/data2/wenhuach/train_llm", help="Where to store the final model.")
     parser.add_argument("--seed", type=int, default=42, help="A seed for reproducible training.")
     parser.add_argument(
         "--model_type",
@@ -192,7 +192,7 @@ def parse_args():
     parser.add_argument(
         "--preprocessing_num_workers",
         type=int,
-        default=64,
+        default=96,
         help="The number of processes to use for the preprocessing.",
     )
     parser.add_argument(
@@ -337,10 +337,7 @@ def main():
     # download the dataset.
     # self.samples = load_dataset("/data6/CCI3-HQ", split='train', cache_dir="/data6/CCI3-HQ-cache",
     #                             verification_mode="no_checks")
-    raw_datasets = load_dataset(
-        "/data2/CCI3-HQ", split='train', cache_dir="/data6/CCI3-HQ-cache",
-        verification_mode="no_checks"
-    )
+
     # if "validation" not in raw_datasets:
     #     raw_datasets["validation"] = load_dataset(
     #         args.dataset_name,
@@ -454,8 +451,8 @@ def main():
                          initializer_range=0.02, use_cache=False, tie_word_embeddings=True, rope_theta=10_000,
                          attention_bias=False, attention_dropout=0.0, bos_token_id=151643, eos_token_id=151645,
                          rms_norm_eps=1e-6)
-    config.attn_implementation = "flash_attention_2"
-    config._attn_implementation = "flash_attention_2"
+    # config.attn_implementation = "flash_attention_2"
+    # config._attn_implementation = "flash_attention_2"
     from transformers.models.qwen3.modeling_qwen3 import Qwen3ForCausalLM
     model = Qwen3ForCausalLM(config).to(torch.bfloat16)
 
@@ -469,70 +466,89 @@ def main():
     # First we tokenize all the texts.
     # column_names = raw_datasets["train"].column_names
     # text_column_name = "text" if "text" in column_names else column_names[0]
-    text_column_name = "text"
-
-    def tokenize_function(examples):
-        return tokenizer(examples[text_column_name], truncation=True, max_length=tokenizer.model_max_length)
-
-    with accelerator.main_process_first():
-        tokenized_datasets = raw_datasets.map(
-            tokenize_function,
-            batched=True,
-            num_proc=args.preprocessing_num_workers,
-            load_from_cache_file=not args.overwrite_cache,
-            desc="Running tokenizer on dataset",
+    processed_dir = "/data2/CCI3-HQ-processed"
+    if not os.path.exists(processed_dir):
+        raw_datasets = load_dataset(
+            "/data5/CCI3-HQ", cache_dir="/data2/CCI3-HQ-cache",
+            verification_mode="no_checks", split="train"
         )
+        # print("~~~~~~~~~~~~~~~~~~~~~~!!!!!!!!!!!!!!!!!!!!!")
+        # raw_datasets = raw_datasets.select(range(50000))
+        text_column_name = "text"
 
-    if args.block_size is None:
-        block_size = tokenizer.model_max_length
-        if block_size > config.max_position_embeddings:
-            logger.warning(
-                f"The tokenizer picked seems to have a very large `model_max_length` ({tokenizer.model_max_length}). "
-                f"Using block_size={min(1024, config.max_position_embeddings)} instead. You can change that default value by passing --block_size xxx."
+        def tokenize_function(examples):
+            return tokenizer(examples[text_column_name], truncation=True, max_length=tokenizer.model_max_length)
+
+        with accelerator.main_process_first():
+            tokenized_datasets = raw_datasets.map(
+                tokenize_function,
+                batched=True,
+                num_proc=args.preprocessing_num_workers,
+                load_from_cache_file=not args.overwrite_cache,
+                desc="Running tokenizer on dataset",
             )
-            block_size = min(1024, config.max_position_embeddings)
+
+        if args.block_size is None:
+            block_size = tokenizer.model_max_length
+            if block_size > config.max_position_embeddings:
+                logger.warning(
+                    f"The tokenizer picked seems to have a very large `model_max_length` ({tokenizer.model_max_length}). "
+                    f"Using block_size={min(1024, config.max_position_embeddings)} instead. You can change that default value by passing --block_size xxx."
+                )
+                block_size = min(1024, config.max_position_embeddings)
+        else:
+            if args.block_size > tokenizer.model_max_length:
+                logger.warning(
+                    f"The block_size passed ({args.block_size}) is larger than the maximum length for the model "
+                    f"({tokenizer.model_max_length}). Using block_size={tokenizer.model_max_length}."
+                )
+            block_size = min(args.block_size, tokenizer.model_max_length)
+
+        # Main data processing function that will concatenate all texts from our dataset and generate chunks of block_size.
+        def group_texts(examples):
+            # Concatenate all texts.
+            concatenated_examples = {k: list(chain(*examples[k])) for k in examples if k in ['attention_mask', 'input_ids']}
+            total_length = len(concatenated_examples[list(concatenated_examples.keys())[0]])
+            if total_length < block_size:
+                return {}  # 小于 block_size 的整批丢掉
+            # We drop the small remainder, and if the total_length < block_size  we exclude this batch and return an empty dict.
+            # We could add padding if the model supported it instead of this drop, you can customize this part to your needs.
+            total_length = (total_length // block_size) * block_size
+            # Split by chunks of max_len.
+            result = {
+                k: [t[i: i + block_size] for i in range(0, total_length, block_size)]
+                for k, t in concatenated_examples.items()
+            }
+            result["labels"] = result["input_ids"].copy()
+            return result
+
+        # Note that with `batched=True`, this map processes 1,000 texts together, so group_texts throws away a remainder
+        # for each of those groups of 1,000 texts. You can adjust that batch_size here but a higher value might be slower
+        # to preprocess.
+        #
+        # To speed up this part, we use multiprocessing. See the documentation of the map method for more information:
+        # https://huggingface.co/docs/datasets/process#map
+
+        with accelerator.main_process_first():
+            lm_datasets = tokenized_datasets.map(
+                group_texts,
+                batched=True,
+                num_proc=args.preprocessing_num_workers,
+                remove_columns=tokenized_datasets.column_names,
+                load_from_cache_file=not args.overwrite_cache,
+                desc=f"Grouping texts in chunks of {block_size}",
+            )
+
+        train_dataset = lm_datasets
+
+        tokenized_datasets.save_to_disk(processed_dir)
+
+    # 在训练脚本中直接加载
     else:
-        if args.block_size > tokenizer.model_max_length:
-            logger.warning(
-                f"The block_size passed ({args.block_size}) is larger than the maximum length for the model "
-                f"({tokenizer.model_max_length}). Using block_size={tokenizer.model_max_length}."
-            )
-        block_size = min(args.block_size, tokenizer.model_max_length)
+        from datasets import load_from_disk
+        lm_datasets = load_from_disk(processed_dir)
+        train_dataset = lm_datasets
 
-    # Main data processing function that will concatenate all texts from our dataset and generate chunks of block_size.
-    def group_texts(examples):
-        # Concatenate all texts.
-        concatenated_examples = {k: list(chain(*examples[k])) for k in examples if k in ['attention_mask', 'input_ids']}
-        total_length = len(concatenated_examples[list(concatenated_examples.keys())[0]])
-        # We drop the small remainder, and if the total_length < block_size  we exclude this batch and return an empty dict.
-        # We could add padding if the model supported it instead of this drop, you can customize this part to your needs.
-        total_length = (total_length // block_size) * block_size
-        # Split by chunks of max_len.
-        result = {
-            k: [t[i: i + block_size] for i in range(0, total_length, block_size)]
-            for k, t in concatenated_examples.items()
-        }
-        result["labels"] = result["input_ids"].copy()
-        return result
-
-    # Note that with `batched=True`, this map processes 1,000 texts together, so group_texts throws away a remainder
-    # for each of those groups of 1,000 texts. You can adjust that batch_size here but a higher value might be slower
-    # to preprocess.
-    #
-    # To speed up this part, we use multiprocessing. See the documentation of the map method for more information:
-    # https://huggingface.co/docs/datasets/process#map
-
-    with accelerator.main_process_first():
-        lm_datasets = tokenized_datasets.map(
-            group_texts,
-            batched=True,
-            num_proc=args.preprocessing_num_workers,
-            remove_columns=tokenized_datasets.column_names,
-            load_from_cache_file=not args.overwrite_cache,
-            desc=f"Grouping texts in chunks of {block_size}",
-        )
-
-    train_dataset = lm_datasets
     # eval_dataset = lm_datasets["validation"]
 
     # Log a few random samples from the training set:
