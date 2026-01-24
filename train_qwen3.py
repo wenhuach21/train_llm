@@ -541,7 +541,7 @@ def main():
 
         train_dataset = lm_datasets
 
-        tokenized_datasets.save_to_disk(processed_dir)
+        lm_datasets.save_to_disk(processed_dir)
 
     # 在训练脚本中直接加载
     else:
