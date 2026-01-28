@@ -454,7 +454,7 @@ def main():
     # config.attn_implementation = "flash_attention_2"
     # config._attn_implementation = "flash_attention_2"
     from transformers.models.qwen3.modeling_qwen3 import Qwen3ForCausalLM
-    model = Qwen3ForCausalLM(config).to(torch.bfloat16)
+    model = Qwen3ForCausalLM(config)
 
     # We resize the embeddings only when necessary to avoid index errors. If you are creating a model from scratch
     # on a small vocab and want a smaller embedding size, remove this test.
@@ -693,6 +693,7 @@ def main():
                 if args.with_tracking:
                     total_loss += loss.detach().float()
                 accelerator.backward(loss)
+                accelerator.clip_grad_norm_(model.parameters(), 1.0)
                 optimizer.step()
                 lr_scheduler.step()
                 optimizer.zero_grad()
